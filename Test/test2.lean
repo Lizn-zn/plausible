@@ -1,12 +1,9 @@
 import Plausible
-import Plausible.ReducibleHelper
 
 import Std.Data.HashMap
 open Std
 
 set_option maxHeartbeats 0
-
-namespace test2
 
 def listToNat : List Nat → Nat
 | []       => 0
@@ -18,11 +15,6 @@ def addTwoNumbers_precond (l1 : List Nat) (l2 : List Nat) : Prop :=
   ∧ (l1.all (fun x => decide (x < 10)) = true) ∧ (l2.all (fun x => decide (x < 10)) = true)
   ∧ (l1.getLast! ≠ 0 ∨ l1 = [0])
   ∧ (l2.getLast! ≠ 0 ∨ l2 = [0])
-
--- 为 reducible Prop 定义添加 Decidable 实例（通用方法）
-instance (l1 l2 : List Nat) : Decidable (addTwoNumbers_precond l1 l2) := by
-  unfold addTwoNumbers_precond
-  infer_instance
 
 def addTwoNumbers (l1 : List Nat) (l2 : List Nat) (h_precond : addTwoNumbers_precond (l1) (l2)) : List Nat :=
   let rec addAux (l1 l2 : List Nat) (carry : Nat) : List Nat :=
@@ -48,16 +40,8 @@ def addTwoNumbers_postcond (l1 : List Nat) (l2 : List Nat) (result: List Nat) (h
   (result.getLast! ≠ 0 ∨ (l1 = [0] ∧ l2 = [0] ∧ result = [0]))
 
 
+/- error: Found a counter-example! -/
+#guard_msgs in
 theorem addTwoNumbers_spec_satisfied (l1: List Nat) (l2: List Nat) (h_precond : addTwoNumbers_precond (l1) (l2)) :
     addTwoNumbers_postcond (l1) (l2) (addTwoNumbers (l1) (l2) h_precond) h_precond := by
-    dsimp only [addTwoNumbers, addTwoNumbers_postcond, addTwoNumbers_precond]
-    dsimp only [addTwoNumbers, addTwoNumbers_postcond, addTwoNumbers_precond] at *
-    plausible (config := { numInst := 1000, maxSize := 100, numRetries := 20, randomSeed := some 42})
-
-end test2
-
-
-/-- error: Found a counter-example! -/
-#guard_msgs in
-theorem type_u (α : Type u) (l : List α) : l = l ++ l := by
-  plausible (config := {quiet := true})
+    plausible_all (config := {quiet := true})

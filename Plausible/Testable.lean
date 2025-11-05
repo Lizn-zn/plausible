@@ -482,6 +482,7 @@ instance (priority := low) decidableTestable {p : Prop} [PrintableProp p] [Decid
       let s := printProp p
       return failure h [s!"issue: {s} does not hold"] 0
 
+
 end Testable
 
 section PrintableProp

@@ -210,9 +210,10 @@ Usage: `plausible_all`
 
 This tactic will:
 1. Execute `repeat (any_goals constructor)` to break down conjunctions
-2. Execute `all_goals plausible` on all resulting subgoals
+2. Execute `plausible` on each subgoal sequentially, stopping immediately if any goal fails
 
-This is useful when dealing with complex propositions that are conjunctions of multiple properties. -/
+This is useful when dealing with complex propositions that are conjunctions of multiple properties.
+Note: Unlike `all_goals plausible`, this stops as soon as one goal finds a counter-example. -/
 elab_rules : tactic | `(tactic| plausible_all $[$cfg]?) => withMainContext do
   -- Step 1: Repeat constructor to break down conjunctions (with limit to avoid infinite loops)
   -- We limit to at most 50 iterations to prevent performance issues
@@ -231,12 +232,19 @@ elab_rules : tactic | `(tactic| plausible_all $[$cfg]?) => withMainContext do
       iterations := iterations + 1
       Lean.Elab.Tactic.evalTactic (← `(tactic| any_goals constructor))
 
-  -- Step 2: Apply plausible to all subgoals
-  match cfg with
-  | some cfgNode =>
-    Lean.Elab.Tactic.evalTactic (← `(tactic| all_goals (plausible $cfgNode)))
-  | none =>
-    Lean.Elab.Tactic.evalTactic (← `(tactic| all_goals plausible))
+  -- Step 2: Apply plausible to each subgoal sequentially, stopping on first failure
+  -- We process goals one by one, and if plausible finds a counter-example, it will throw an error
+  -- which will stop the entire tactic execution immediately
+  let goals ← getGoals
+  for _ in goals do
+    -- Process only the first goal (if there are multiple, we'll handle them one by one)
+    -- If plausible succeeds (no counter-example), it will admit the goal and we continue
+    -- If plausible fails (finds counter-example), it will throw an error and stop execution
+    match cfg with
+    | some cfgNode =>
+      Lean.Elab.Tactic.evalTactic (← `(tactic| focus (plausible $cfgNode)))
+    | none =>
+      Lean.Elab.Tactic.evalTactic (← `(tactic| focus plausible))
 
 -- Porting note: below is the remaining code from mathlib3 which supports the
 -- `trace.plausible.instance` trace option, and which has not been ported.
