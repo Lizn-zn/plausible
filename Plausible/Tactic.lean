@@ -165,6 +165,20 @@ elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
   g.withContext do
   let tgt ← g.getType
   let tgt' ← addDecorations tgt
+
+  -- Safety check: verify that any getLast! calls have provably non-empty lists
+  -- This prevents runtime panics during testing
+  -- We reduce the target with reducible transparency to see through @[reducible] definitions
+  try
+    let tgtReduced ← Meta.withTransparency .reducible (Meta.reduce tgt')
+    SafeGuard.checkGetLastSafety tgtReduced
+  catch e =>
+    throwError "\
+      [Plausible Safety Error]\
+      \n{e.toMessageData}\
+      \n\
+      \nTo fix: wrap partial functions with guards like `if l.length > 0 then ... else True`"
+
   let cfg := { cfg with
     traceDiscarded := cfg.traceDiscarded || (← isTracingEnabledFor `plausible.discarded),
     traceSuccesses := cfg.traceSuccesses || (← isTracingEnabledFor `plausible.success),
@@ -230,7 +244,7 @@ elab_rules : tactic | `(tactic| plausible_all $[$cfg]?) => withMainContext do
     else
       prevGoalCount := currentGoalCount
       iterations := iterations + 1
-      Lean.Elab.Tactic.evalTactic (← `(tactic| any_goals constructor))
+      Lean.Elab.Tactic.evalTactic (← `(tactic| try (any_goals constructor)))
 
   -- Step 2: Apply plausible to each subgoal sequentially, stopping on first failure
   -- We process goals one by one, and if plausible finds a counter-example, it will throw an error

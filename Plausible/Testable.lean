@@ -7,6 +7,7 @@ module
 
 public meta import Lean.Elab.Tactic.Config
 public meta import Plausible.Sampleable
+public meta import Plausible.SafeGuard
 
 public meta section
 

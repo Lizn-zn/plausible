@@ -36,7 +36,8 @@ def addTwoNumbers (l1 : List Nat) (l2 : List Nat) (h_precond : addTwoNumbers_pre
 def addTwoNumbers_postcond (l1 : List Nat) (l2 : List Nat) (result: List Nat) (h_precond : addTwoNumbers_precond (l1) (l2)) : Prop :=
   listToNat result = listToNat l1 + listToNat l2
   ∧
-  (result.all (fun x => decide (x < 10)) = true) ∧
+  (result.all (fun x => decide (x < 10)) = true)
+  ∧
   (result.getLast! ≠ 0 ∨ (l1 = [0] ∧ l2 = [0] ∧ result = [0]))
 
 
