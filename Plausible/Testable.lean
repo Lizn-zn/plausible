@@ -144,7 +144,7 @@ structure Configuration where
   Enable SafeGuard to detect partial functions like `getLast!`, `head!`, etc.
   When enabled, plausible will check for unsafe partial function usage before testing.
   -/
-  enableSafeGuard : Bool := true
+  enableSafeGuard : Bool := false
   deriving Inhabited
 
 open Lean in

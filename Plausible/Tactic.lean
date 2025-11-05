@@ -163,7 +163,7 @@ elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
   g.withContext do
   let tgt ← g.getType
   let tgt' ← addDecorations tgt
-  
+
   -- Safety check: verify that any getLast! calls have provably non-empty lists
   -- This prevents runtime panics during testing
   -- Only run if enableSafeGuard is true in config

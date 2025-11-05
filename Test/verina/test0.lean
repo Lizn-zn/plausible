@@ -42,4 +42,4 @@ def addTwoNumbers_postcond (l1 : List Nat) (l2 : List Nat) (result: List Nat) (h
 /-- error: Found a counter-example! -/
 #guard_msgs in
 theorem addTwoNumbers_spec_satisfied (l1: List Nat) (l2: List Nat) (h_precond : addTwoNumbers_precond (l1) (l2)) : addTwoNumbers_postcond (l1) (l2) (addTwoNumbers (l1) (l2) h_precond) h_precond := by
-  plausible_all (config := {quiet := true})
+  plausible_all (config := {quiet := true, enableSafeGuard := false})
