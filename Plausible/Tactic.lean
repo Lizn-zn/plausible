@@ -157,6 +157,7 @@ Options:
 * `set_option trace.plausible.success true`: print the tested samples that satisfy a property
 -/
 syntax (name := plausibleSyntax) "plausible" (config)? : tactic
+syntax (name := plausibleAllGoals) "plausible_all" (config)? : tactic
 
 elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
   let cfg ← elabConfig (mkOptionalNode cfg)
@@ -171,7 +172,10 @@ elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
     traceShrinkCandidates := cfg.traceShrinkCandidates
       || (← isTracingEnabledFor `plausible.shrink.candidates) }
   let inst ← try
-    synthInstance (← mkAppM ``Testable #[tgt'])
+    -- Use reducible transparency to allow type class inference to see through @[reducible] definitions
+    -- This enables automatic Decidable instance synthesis for reducible Prop definitions
+    Meta.withTransparency .reducible do
+      synthInstance (← mkAppM ``Testable #[tgt'])
   catch _ => throwError "\
       Failed to create a `testable` instance for `{tgt}`.\
     \nWhat to do:\
@@ -199,6 +203,40 @@ elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
   let code ← unsafe evalExpr (CoreM PUnit) (mkApp (mkConst ``CoreM) (mkConst ``PUnit [1])) e
   _ ← code
   admitGoal g
+
+/-- Variant of `plausible` that automatically breaks down conjunctions and applies `plausible` to all subgoals.
+
+Usage: `plausible_all`
+
+This tactic will:
+1. Execute `repeat (any_goals constructor)` to break down conjunctions
+2. Execute `all_goals plausible` on all resulting subgoals
+
+This is useful when dealing with complex propositions that are conjunctions of multiple properties. -/
+elab_rules : tactic | `(tactic| plausible_all $[$cfg]?) => withMainContext do
+  -- Step 1: Repeat constructor to break down conjunctions (with limit to avoid infinite loops)
+  -- We limit to at most 50 iterations to prevent performance issues
+  let maxIterations := 50
+  let mut iterations := 0
+  let mut prevGoalCount := 0
+  let mut shouldContinue := true
+  while shouldContinue do
+    let goals ← getGoals
+    let currentGoalCount := goals.length
+    -- Stop if we've reached max iterations or if no progress is being made
+    if iterations >= maxIterations || (iterations > 0 && currentGoalCount == prevGoalCount) then
+      shouldContinue := false
+    else
+      prevGoalCount := currentGoalCount
+      iterations := iterations + 1
+      Lean.Elab.Tactic.evalTactic (← `(tactic| any_goals constructor))
+
+  -- Step 2: Apply plausible to all subgoals
+  match cfg with
+  | some cfgNode =>
+    Lean.Elab.Tactic.evalTactic (← `(tactic| all_goals (plausible $cfgNode)))
+  | none =>
+    Lean.Elab.Tactic.evalTactic (← `(tactic| all_goals plausible))
 
 -- Porting note: below is the remaining code from mathlib3 which supports the
 -- `trace.plausible.instance` trace option, and which has not been ported.
