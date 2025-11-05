@@ -3,13 +3,11 @@ Copyright (c) 2022 Henrik Böving. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Henrik Böving, Simon Hudon
 -/
-module
 
-public meta import Lean.Elab.Tactic.Config
-public meta import Plausible.Sampleable
-public meta import Plausible.SafeGuard
+import Lean.Elab.Tactic.Config
+import Plausible.Sampleable
+import Plausible.SafeGuard
 
-public meta section
 
 
 /-!
@@ -142,6 +140,11 @@ structure Configuration where
   Disable output.
   -/
   quiet : Bool := false
+  /--
+  Enable SafeGuard to detect partial functions like `getLast!`, `head!`, etc.
+  When enabled, plausible will check for unsafe partial function usage before testing.
+  -/
+  enableSafeGuard : Bool := true
   deriving Inhabited
 
 open Lean in
@@ -150,7 +153,8 @@ instance : ToExpr Configuration where
   toExpr cfg := mkAppN (mkConst ``Configuration.mk)
     #[toExpr cfg.numInst, toExpr cfg.maxSize, toExpr cfg.numRetries, toExpr cfg.maxShrinkDepth,
       toExpr cfg.traceDiscarded, toExpr cfg.traceSuccesses, toExpr cfg.traceShrink,
-      toExpr cfg.traceShrinkCandidates, toExpr cfg.randomSeed, toExpr cfg.quiet]
+      toExpr cfg.traceShrinkCandidates, toExpr cfg.randomSeed, toExpr cfg.quiet,
+      toExpr cfg.enableSafeGuard]
 
 /--
 Allow elaboration of `Configuration` arguments to tactics.

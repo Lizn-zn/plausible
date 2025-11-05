@@ -3,12 +3,10 @@ Copyright (c) 2020 Simon Hudon. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Simon Hudon, Kim Morrison
 -/
-module
 
-public meta import Plausible.Testable
-public meta import Plausible.Attr
+import Plausible.Testable
+import Plausible.Attr
 
-public meta section
 
 /-!
 ## Finding counterexamples automatically using `plausible`
@@ -165,19 +163,22 @@ elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
   g.withContext do
   let tgt ← g.getType
   let tgt' ← addDecorations tgt
-
+  
   -- Safety check: verify that any getLast! calls have provably non-empty lists
   -- This prevents runtime panics during testing
-  -- We reduce the target with reducible transparency to see through @[reducible] definitions
-  try
-    let tgtReduced ← Meta.withTransparency .reducible (Meta.reduce tgt')
-    SafeGuard.checkGetLastSafety tgtReduced
-  catch e =>
-    throwError "\
-      [Plausible Safety Error]\
-      \n{e.toMessageData}\
-      \n\
-      \nTo fix: wrap partial functions with guards like `if l.length > 0 then ... else True`"
+  -- Only run if enableSafeGuard is true in config
+  if cfg.enableSafeGuard then
+    try
+      -- We reduce the target with reducible transparency to see through @[reducible] definitions
+      let tgtReduced ← Meta.withTransparency .reducible (Meta.reduce tgt')
+      SafeGuard.checkGetLastSafety tgtReduced
+    catch e =>
+      throwError "\
+        [Plausible Safety Error]\
+        \n{e.toMessageData}\
+        \n\
+        \nTo fix: wrap partial functions with guards like `if l.length > 0 then ... else True`\
+        \nOr disable SafeGuard: plausible (config := \{ enableSafeGuard := false })"
 
   let cfg := { cfg with
     traceDiscarded := cfg.traceDiscarded || (← isTracingEnabledFor `plausible.discarded),

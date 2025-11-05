@@ -4,11 +4,8 @@ Safe guards for Plausible to prevent runtime panics from partial functions.
 This module provides a mechanism to automatically verify safety conditions
 (like list non-emptiness) before evaluating Decidable instances.
 -/
-module
 
-public meta import Lean
-
-public meta section
+import Lean
 
 namespace Plausible.SafeGuard
 

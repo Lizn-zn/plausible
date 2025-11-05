@@ -3,11 +3,9 @@ Copyright (c) 2025 AWS. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: AWS
 -/
-module
 
-public meta import Plausible.Gen
+import Plausible.Gen
 
-public meta section
 
 
 /-!

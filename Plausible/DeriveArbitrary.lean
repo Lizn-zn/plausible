@@ -3,7 +3,6 @@ Copyright (c) 2025 Ernest Ng. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Ernest Ng
 -/
-module
 
 import Lean.Elab
 import Lean.Elab.Deriving.Basic
@@ -298,7 +297,7 @@ def mkMutualBlock (ctx : Deriving.Context) : TermElabM Syntax := do
 
 /-- Creates an instance of the `ArbitraryFueled` typeclass -/
 private def mkArbitraryFueledInstanceCmd (declName : Name) : TermElabM (Array Syntax) := do
-  let ctx ← mkContext ``Arbitrary "arbitrary" declName
+  let ctx ← mkContext "arbitrary" declName
   let cmds := #[← mkMutualBlock ctx] ++ (← mkArbitraryFueledInstanceCmds ctx #[declName])
   trace[plausible.deriving.arbitrary] "\n{cmds}"
   return cmds

@@ -3,12 +3,10 @@ Copyright (c) 2025 AWS. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: AWS
 -/
-module
 
-public import Plausible.Arbitrary
-public import Plausible.Gen
+import Plausible.Arbitrary
+import Plausible.Gen
 
-public section
 
 namespace Plausible
 
