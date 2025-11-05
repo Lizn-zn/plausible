@@ -63,19 +63,71 @@ partial def findPartialFunctionCalls (e : Expr) : MetaM (Array (Name × Expr)) :
 
   visit e
 
+/-- Maximum depth for unfolding function definitions -/
+def maxUnfoldDepth : Nat := 3
+
+/-- Collect all constants (function names) used in an expression -/
+partial def collectConstants (e : Expr) : Array Name :=
+  let rec visit (e : Expr) (acc : Array Name) : Array Name :=
+    let acc := if let .const name _ := e then acc.push name else acc
+    match e with
+    | .app f a => visit a (visit f acc)
+    | .lam _ _ b _ => visit b acc
+    | .forallE _ d b _ => visit b (visit d acc)
+    | .letE _ t v b _ => visit b (visit v (visit t acc))
+    | .mdata _ e' => visit e' acc
+    | .proj _ _ e' => visit e' acc
+    | _ => acc
+  visit e #[]
+
+/-- Unfold function definitions recursively to check their bodies -/
+partial def unfoldAndCheck (e : Expr) (depth : Nat := 0) (visited : Std.HashSet Name := {}) : MetaM (Array (Name × Expr)) := do
+  if depth >= maxUnfoldDepth then
+    return #[]
+  
+  let mut allCalls := #[]
+  
+  -- First check the current expression
+  let directCalls ← findPartialFunctionCalls e
+  allCalls := allCalls ++ directCalls
+  
+  -- Then collect all constants and try to unfold them
+  let constants := collectConstants e
+  
+  for constName in constants do
+    -- Skip if we've already visited this function
+    if visited.contains constName then
+      continue
+    
+    -- Try to get the function's definition
+    try
+      let constInfo ← getConstInfo constName
+      match constInfo with
+      | .defnInfo info =>
+        -- We found a function definition, check its body recursively
+        let newVisited := visited.insert constName
+        let bodyCalls ← unfoldAndCheck info.value (depth + 1) newVisited
+        allCalls := allCalls ++ bodyCalls
+      | _ => pure ()  -- Not a definition, skip
+    catch _ =>
+      pure ()  -- Couldn't get definition, skip
+  
+  return allCalls
+
 /-- Check if an expression contains unsafe calls to partial functions and report them -/
 def checkGetLastSafety (e : Expr) : MetaM Unit := do
-  let calls ← findPartialFunctionCalls e
-
+  -- Recursively unfold and find all partial function calls (max 3 levels deep)
+  let calls ← unfoldAndCheck e
+  
   if calls.isEmpty then
     return ()
-
+  
   -- Conservative approach: report ALL partial function uses (deduplicated)
   let mut fnSet : Std.HashSet Name := {}
-
+  
   for (fnName, _) in calls do
     fnSet := fnSet.insert fnName
-
+  
   if !fnSet.isEmpty then
     let mut errors := #[]
     for fnName in fnSet.toArray do
@@ -86,7 +138,7 @@ def checkGetLastSafety (e : Expr) : MetaM Unit := do
         | ``GetElem?.getElem! => "getElem? or get?"
         | _ => "safe alternative (?)"
       errors := errors.push s!"Partial function `{fnName}` can panic.\nSafe alternative: {safeName}"
-
+    
     let errorMsg := String.intercalate "\n\n" errors.toList
     throwError errorMsg
 
