@@ -133,11 +133,18 @@ def oneOfWithDefault (default : Gen α) (gs : List (Gen α)) : Gen α :=
     List.getD gs idx.val default
 
 /-- `frequency` picks a generator from the list `gs` according to the weights in `gs`.
-    If `gs` is empty, the `default` generator is returned.  -/
+    If `gs` is empty, the `default` generator is returned.
+    Optimized to handle empty list and avoid unnecessary computation. -/
 def frequency (default : Gen α) (gs : List (Nat × Gen α)) : Gen α := do
-  let total := List.sum <| List.map Prod.fst gs
-  let n ← Gen.choose Nat 0 (total - 1) (by omega)
-  (pick default gs n).snd
+  match gs with
+  | [] => default
+  | _ =>
+    let total := gs.foldl (fun acc (w, _) => acc + w) 0
+    if total == 0 then
+      default
+    else
+      let n ← Gen.choose Nat 0 (total - 1) (by omega)
+      (pick default gs n).snd
 
 /-- `sized f` constructs a generator that depends on its `size` parameter -/
 def sized (f : Nat → Gen α) : Gen α :=
@@ -146,18 +153,22 @@ def sized (f : Nat → Gen α) : Gen α :=
 variable {α : Type u}
 
 /-- Create an `Array` of examples using `x`. The size is controlled
-by the size parameter of `Gen`. -/
-def arrayOf (x : Gen α) : Gen (Array α) := do
-  let ⟨sz⟩ ← up chooseNat
+by the size parameter of `Gen`, capped at a reasonable maximum to avoid memory issues. -/
+def arrayOf (x : Gen α) (maxSize : Option Nat := some 1000) : Gen (Array α) := do
+  let ⟨rawSize⟩ ← up chooseNat
+  -- Cap the size to avoid generating extremely large arrays
+  let sz := match maxSize with
+    | some cap => min rawSize cap
+    | none => rawSize
   let mut res := Array.mkEmpty sz
   for _ in [0:sz] do
     res := res.push (← x)
   return res
 
 /-- Create a `List` of examples using `x`. The size is controlled
-by the size parameter of `Gen`. -/
-def listOf (x : Gen α) : Gen (List α) := do
-  return (← arrayOf x).toList
+by the size parameter of `Gen`, capped at a reasonable maximum to avoid memory issues. -/
+def listOf (x : Gen α) (maxSize : Option Nat := some 1000) : Gen (List α) := do
+  return (← arrayOf x maxSize).toList
 
 /-- Given a list of example generators, choose one to create an example. -/
 def oneOf (xs : Array (Gen α)) (pos : 0 < xs.size := by decide) : Gen α := do

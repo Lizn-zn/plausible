@@ -152,15 +152,15 @@ instance Prod.Arbitrary {α : Type u} {β : Type v} [Arbitrary α] [Arbitrary β
   arbitrary := prodOf arbitrary arbitrary
 
 instance List.Arbitrary [Arbitrary α] : Arbitrary (List α) where
-  arbitrary := Gen.listOf arbitrary
+  arbitrary := Gen.listOf arbitrary (maxSize := some 100)
 
 instance ULift.Arbitrary [Arbitrary α] : Arbitrary (ULift α) where
   arbitrary := do let x : α ← arbitrary; return ⟨x⟩
 
 instance String.Arbitrary : Arbitrary String where
-  arbitrary := return String.mk (← Gen.listOf arbitrary)
+  arbitrary := return String.mk (← Gen.listOf arbitrary (maxSize := some 100))
 
-instance Array.Arbitrary [Arbitrary α] : Arbitrary (Array α) := ⟨Gen.arrayOf arbitrary⟩
+instance Array.Arbitrary [Arbitrary α] : Arbitrary (Array α) := ⟨Gen.arrayOf arbitrary (maxSize := some 100)⟩
 
 end Instances
 

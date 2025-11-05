@@ -222,11 +222,25 @@ instance Sigma.shrinkable [shrA : Shrinkable α] [shrB : Shrinkable β] :
 
 open Shrinkable
 
-/-- Shrink a list of a shrinkable type, either by discarding an element or shrinking an element. -/
+/-- Shrink a list of a shrinkable type, either by discarding an element or shrinking an element.
+This optimized version limits the number of candidates to avoid exponential blowup. -/
 instance List.shrinkable [Shrinkable α] : Shrinkable (List α) where
   shrink := fun L =>
-    (L.mapIdx fun i _ => L.eraseIdx i) ++
-    (L.mapIdx fun i a => (shrink a).map fun a' => L.modify i fun _ => a').flatten
+    -- For long lists, only try removing elements at strategic positions
+    let removalCandidates :=
+      if L.length ≤ 5 then
+        L.mapIdx fun i _ => L.eraseIdx i
+      else
+        -- For longer lists, only try removing front, middle, and back elements
+        (match L.tail? with | some t => [t] | none => []) ++
+        [L.dropLast, L.eraseIdx (L.length / 2)] ++
+        -- Also try halving the list
+        [L.take (L.length / 2), L.drop (L.length / 2)]
+    -- For element shrinking, only shrink the first few elements to avoid O(n²) behavior
+    let shrinkCandidates :=
+      ((L.take (min 3 L.length)).mapIdx fun i a =>
+        (shrink a).map fun a' => L.modify i fun _ => a').flatten
+    removalCandidates ++ shrinkCandidates
 
 instance ULift.shrinkable [Shrinkable α] : Shrinkable (ULift α) where
   shrink u := (shrink u.down).map ULift.up
@@ -235,7 +249,18 @@ instance String.shrinkable : Shrinkable String where
   shrink s := (shrink s.toList).map String.mk
 
 instance Array.shrinkable [Shrinkable α] : Shrinkable (Array α) where
-  shrink xs := (shrink xs.toList).map Array.mk
+  shrink xs :=
+    -- Avoid converting to list and back for large arrays; use direct array operations
+    if xs.size ≤ 10 then
+      (shrink xs.toList).map Array.mk
+    else
+      -- For large arrays, generate fewer candidates directly
+      let halfSize := xs.size / 2
+      let base := [xs.extract 0 halfSize, xs.extract halfSize xs.size]
+      if xs.size > 0 then
+        xs.pop :: base
+      else
+        base
 
 instance Subtype.shrinkable {α : Type u} {β : α → Prop} [Shrinkable α] [∀ x, Decidable (β x)] : Shrinkable {x : α // β x} where
   shrink x :=
