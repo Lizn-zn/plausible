@@ -113,6 +113,11 @@ structure Configuration where
   maxSize : Nat := 100
   numRetries : Nat := 10
   /--
+  Maximum depth of shrinking to prevent excessive computation.
+  Set to `none` for unlimited shrinking.
+  -/
+  maxShrinkDepth : Option Nat := some 100
+  /--
   Enable tracing of values that didn't fulfill preconditions and were thus discarded.
   -/
   traceDiscarded : Bool := false
@@ -141,10 +146,10 @@ structure Configuration where
 open Lean in
 instance : ToExpr Configuration where
   toTypeExpr := mkConst `Configuration
-  toExpr cfg := mkApp9 (mkConst ``Configuration.mk)
-    (toExpr cfg.numInst) (toExpr cfg.maxSize) (toExpr cfg.numRetries) (toExpr cfg.traceDiscarded)
-    (toExpr cfg.traceSuccesses) (toExpr cfg.traceShrink) (toExpr cfg.traceShrinkCandidates)
-    (toExpr cfg.randomSeed) (toExpr cfg.quiet)
+  toExpr cfg := mkAppN (mkConst ``Configuration.mk)
+    #[toExpr cfg.numInst, toExpr cfg.maxSize, toExpr cfg.numRetries, toExpr cfg.maxShrinkDepth,
+      toExpr cfg.traceDiscarded, toExpr cfg.traceSuccesses, toExpr cfg.traceShrink,
+      toExpr cfg.traceShrinkCandidates, toExpr cfg.randomSeed, toExpr cfg.quiet]
 
 /--
 Allow elaboration of `Configuration` arguments to tactics.
@@ -252,6 +257,20 @@ def verbose : Configuration where
   traceSuccesses := true
   traceShrink := true
   traceShrinkCandidates := true
+
+/-- A fast configuration with reduced test instances and smaller sizes for better performance. -/
+def fast : Configuration where
+  numInst := 20
+  maxSize := 30
+  numRetries := 3
+  maxShrinkDepth := some 20
+
+/-- A minimal configuration for smoke testing. -/
+def minimal : Configuration where
+  numInst := 5
+  maxSize := 10
+  numRetries := 1
+  maxShrinkDepth := some 5
 
 end Configuration
 
@@ -361,10 +380,16 @@ variable {α : Sort _}
 candidate that falsifies a property and recursively shrinking that one.
 The process is guaranteed to terminate because `shrink x` produces
 a proof that all the values it produces are smaller (according to `SizeOf`)
-than `x`. -/
+than `x`. Now also respects `maxShrinkDepth` configuration to prevent excessive computation. -/
 partial def minimizeAux [SampleableExt α] {β : α → Prop} [∀ x, Testable (β x)] (cfg : Configuration)
     (var : String) (x : SampleableExt.proxy α) (n : Nat) :
     OptionT Gen (Σ x, TestResult (β (SampleableExt.interp x))) := do
+  -- Check if we've exceeded the maximum shrink depth
+  if let some maxDepth := cfg.maxShrinkDepth then
+    if n ≥ maxDepth then
+      if cfg.traceShrink then
+        slimTrace s!"Maximum shrink depth {maxDepth} reached for {var} := {repr x}"
+      failure
   let candidates := SampleableExt.shrink.shrink x
   if cfg.traceShrinkCandidates then
     slimTrace s!"Candidates for {var} := {repr x}:\n  {repr candidates}"
@@ -555,7 +580,7 @@ namespace Decorations
 open Lean
 
 /-- Traverse the syntax of a proposition to find universal quantifiers
-quantifiers and add `NamedBinder` annotations next to them. -/
+and add `NamedBinder` annotations next to them. -/
 partial def addDecorations (e : Expr) : MetaM Expr :=
   Meta.transform e fun expr => do
     if not (← Meta.inferType expr).isProp then
