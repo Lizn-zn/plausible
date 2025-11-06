@@ -19,6 +19,50 @@ def partialFunctions : List Name := [
   ``GetElem?.getElem!
 ]
 
+/-- Check if an expression contains Float type -/
+partial def containsFloatType (e : Expr) : MetaM Bool := do
+  let rec visit (e : Expr) : MetaM Bool := do
+    -- Check if this expression's type is Float
+    try
+      let ty ← inferType e
+      let tyWhnf ← whnf ty
+      if tyWhnf.isConstOf ``Float then
+        return true
+    catch _ =>
+      pure ()
+
+    -- Check if the expression itself is the Float constant
+    if e.isConstOf ``Float then
+      return true
+
+    -- Recursively check subexpressions
+    match e with
+    | .app f a =>
+      let fHasFloat ← visit f
+      if fHasFloat then return true
+      visit a
+    | .lam _ d b _ =>
+      let dHasFloat ← visit d
+      if dHasFloat then return true
+      visit b
+    | .forallE _ d b _ =>
+      let dHasFloat ← visit d
+      if dHasFloat then return true
+      visit b
+    | .letE _ t v b _ =>
+      let tHasFloat ← visit t
+      if tHasFloat then return true
+      let vHasFloat ← visit v
+      if vHasFloat then return true
+      visit b
+    | .mdata _ e' =>
+      visit e'
+    | .proj _ _ e' =>
+      visit e'
+    | _ => return false
+
+  visit e
+
 /-- Extract all applications of partial functions in an expression -/
 partial def findPartialFunctionCalls (e : Expr) : MetaM (Array (Name × Expr)) := do
   let rec visit (e : Expr) : MetaM (Array (Name × Expr)) := do
@@ -84,21 +128,21 @@ partial def collectConstants (e : Expr) : Array Name :=
 partial def unfoldAndCheck (e : Expr) (depth : Nat := 0) (visited : Std.HashSet Name := {}) : MetaM (Array (Name × Expr)) := do
   if depth >= maxUnfoldDepth then
     return #[]
-  
+
   let mut allCalls := #[]
-  
+
   -- First check the current expression
   let directCalls ← findPartialFunctionCalls e
   allCalls := allCalls ++ directCalls
-  
+
   -- Then collect all constants and try to unfold them
   let constants := collectConstants e
-  
+
   for constName in constants do
     -- Skip if we've already visited this function
     if visited.contains constName then
       continue
-    
+
     -- Try to get the function's definition
     try
       let constInfo ← getConstInfo constName
@@ -111,23 +155,48 @@ partial def unfoldAndCheck (e : Expr) (depth : Nat := 0) (visited : Std.HashSet 
       | _ => pure ()  -- Not a definition, skip
     catch _ =>
       pure ()  -- Couldn't get definition, skip
-  
+
   return allCalls
 
 /-- Check if an expression contains unsafe calls to partial functions and report them -/
 def checkGetLastSafety (e : Expr) : MetaM Unit := do
-  -- Recursively unfold and find all partial function calls (max 3 levels deep)
+  -- First check for Float usage
+  let hasFloat ← containsFloatType e
+  if hasFloat then
+    throwError "\
+      [Plausible Float Warning]\
+      \nDetected Float type in proposition.\
+      \n\
+      \nFloating-point numbers are problematic for formal verification:\
+      \n  • Precision issues: 0.1 + 0.2 ≠ 0.3\
+      \n  • Rounding errors accumulate in calculations\
+      \n  • Non-associative: (a + b) + c ≠ a + (b + c)\
+      \n  • Special values: NaN, Infinity behavior\
+      \n\
+      \nRecommendations:\
+      \n  1. Use Rat (rational numbers) instead for exact arithmetic\
+      \n  2. Use Int or Nat if fractional parts aren't needed\
+      \n  3. Define a custom fixed-point type for controlled precision\
+      \n\
+      \nIf you must use Float, ensure you have defined:\
+      \n  • instance : Repr Float\
+      \n  • instance : Plausible.Shrinkable Float\
+      \n  • instance : Plausible.Arbitrary Float\
+      \n\
+      \nSee Test/verina/float_analysis.lean for an example."
+
+  -- Then check for partial function calls
   let calls ← unfoldAndCheck e
-  
+
   if calls.isEmpty then
     return ()
-  
+
   -- Conservative approach: report ALL partial function uses (deduplicated)
   let mut fnSet : Std.HashSet Name := {}
-  
+
   for (fnName, _) in calls do
     fnSet := fnSet.insert fnName
-  
+
   if !fnSet.isEmpty then
     let mut errors := #[]
     for fnName in fnSet.toArray do
@@ -138,7 +207,7 @@ def checkGetLastSafety (e : Expr) : MetaM Unit := do
         | ``GetElem?.getElem! => "getElem? or get?"
         | _ => "safe alternative (?)"
       errors := errors.push s!"Partial function `{fnName}` can panic.\nSafe alternative: {safeName}"
-    
+
     let errorMsg := String.intercalate "\n\n" errors.toList
     throwError errorMsg
 

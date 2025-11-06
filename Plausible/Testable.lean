@@ -313,7 +313,91 @@ instance orTestable [Testable p] [Testable q] : Testable (p ∨ q) where
       let xq ← runProp q cfg min
       return or xp xq
 
-instance iffTestable [Testable ((p ∧ q) ∨ (¬ p ∧ ¬ q))] : Testable (p ↔ q) where
+instance impTestable [Testable (¬ p ∨ q)] : Testable (p → q) where
+  run := fun cfg min => do
+    let h ← runProp (¬ p ∨ q) cfg min
+    have : (p → q) ↔ (¬ p ∨ q) := by
+      constructor
+      · intro himp
+        by_cases hp : p
+        · exact Or.inr (himp hp)
+        · exact Or.inl hp
+      · intro hor hp
+        cases hor with
+        | inl hnp => exact absurd hp hnp
+        | inr hq => exact hq
+    return iff this h
+
+/-- Heuristic instance for implication when p is only Testable (not Decidable).
+This is less reliable but allows testing implications where the premise contains
+existential quantifiers. It works by trying to find cases where p holds but q doesn't. -/
+instance (priority := low) impTestableHeuristic [PrintableProp p] [PrintableProp q]
+    [Testable p] [Testable q] : Testable (p → q) where
+  run := fun cfg min => do
+    -- Try to find a counterexample: p holds but q doesn't
+    -- We test p, and if it seems to hold, we test q
+    let rp ← runProp p cfg false
+    match rp with
+    | TestResult.success (PSum.inr hp) =>
+      -- p holds with proof! Now check if q holds
+      let rq ← runProp q cfg false
+      match rq with
+      | TestResult.success _ =>
+        -- Both p and q hold, so p → q holds (for this case at least)
+        -- We don't have a general proof, just evidence from this test
+        return TestResult.success (PSum.inl ())
+      | TestResult.failure hnq msgs shrinks =>
+        -- p holds but q doesn't, we found a real counterexample!
+        -- We can prove ¬(p → q) because we have hp : p and hnq : ¬q
+        have h : ¬(p → q) := fun hpq => hnq (hpq hp)
+        let s := s!"{printProp p} → {printProp q}"
+        return TestResult.failure h (s!"issue: {s} does not hold (premise holds but conclusion doesn't)" :: msgs) shrinks
+      | TestResult.gaveUp n =>
+        -- Couldn't determine q
+        return TestResult.gaveUp n
+    | TestResult.success (PSum.inl _) =>
+      -- p holds but without proof, can't reliably test the implication
+      -- We give up because we can't construct a proper counterexample
+      return TestResult.gaveUp 1
+    | TestResult.failure _ _ _ =>
+      -- p doesn't hold, so p → q is vacuously true
+      -- We don't have a proof of p → q, but tests suggest it's okay
+      return TestResult.success (PSum.inl ())
+    | TestResult.gaveUp n =>
+      -- Couldn't determine p
+      return TestResult.gaveUp n
+
+/-- Instance for testing if-then-else.
+When we can decide the condition c (which is required for if-then-else syntax),
+we test the relevant branch. -/
+instance iteTestable [Decidable c] [Testable p] [Testable q] :
+    Testable (if c then p else q) where
+  run := fun cfg min => do
+    if hc : c then
+      let r ← runProp p cfg min
+      have h : (if c then p else q) ↔ p := by
+        simp [hc]
+      return TestResult.iff h r
+    else
+      let r ← runProp q cfg min
+      have h : (if c then p else q) ↔ q := by
+        simp [hc]
+      return TestResult.iff h r
+
+instance (priority := default+1) iffTestableGeneral [Testable (p → q)] [Testable (q → p)] : Testable (p ↔ q) where
+  run := fun cfg min => do
+    let hpq ← runProp (p → q) cfg min
+    let hqp ← runProp (q → p) cfg min
+    have : (p ↔ q) ↔ ((p → q) ∧ (q → p)) := by
+      constructor
+      · intro h
+        exact ⟨h.mp, h.mpr⟩
+      · intro ⟨hpq, hqp⟩
+        exact ⟨hpq, hqp⟩
+    let r := and hpq hqp
+    return iff this r
+
+instance (priority := low) iffTestable [Testable ((p ∧ q) ∨ (¬ p ∧ ¬ q))] : Testable (p ↔ q) where
   run := fun cfg min => do
     let h ← runProp ((p ∧ q) ∨ (¬ p ∧ ¬ q)) cfg min
     have := by
@@ -325,6 +409,13 @@ instance iffTestable [Testable ((p ∧ q) ∨ (¬ p ∧ ¬ q))] : Testable (p �
     return iff this h
 
 variable {var : String}
+
+-- Instance to handle NamedBinder var p where p is any proposition
+-- This allows NamedBinder to be transparent for Testable
+instance (priority := 10) namedBinderTestable [Testable p] : Testable (NamedBinder var p) where
+  run := fun cfg min => do
+    let r ← runProp p cfg min
+    return r
 
 instance decGuardTestable [PrintableProp p] [Decidable p] {β : p → Prop} [∀ h, Testable (β h)] :
     Testable (NamedBinder var <| ∀ h, β h) where
@@ -345,6 +436,55 @@ instance forallTypesTestable {f : Type → Prop} [Testable (f Int)] :
   run := fun cfg min => do
     let r ← runProp (f Int) cfg min
     return addVarInfo var "Int" (· <| Int) r
+
+-- Instance to handle P → False by testing that P is false
+-- For P → False, if P is always false, then P → False is true
+-- If we can find a case where P holds, then P → False is false
+-- This handles both NamedBinder var (p → False) and (NamedBinder var p) → False
+instance (priority := 100) impFalseTestable [PrintableProp p] [Testable p] :
+    Testable (NamedBinder var <| p → False) where
+  run := fun cfg min => do
+    -- Test by trying to find a case where p holds
+    -- If we find such a case, then p → False is false (we have a counter-example)
+    -- If we can't find such a case, we assume p → False holds
+    let r ← runProp p cfg min
+    match r with
+    | .success (PSum.inr hp) =>
+      -- We found a case where p holds with proof, so p → False is false
+      -- We can construct a proof: (p → False) → False by applying the function to hp
+      return .failure (fun h => h hp) [] 0
+    | .success (PSum.inl _) =>
+      -- We found a case where p holds but without proof
+      -- We can't prove p → False is false without a proof of p
+      return .gaveUp 1
+    | .failure _ _ _ =>
+      -- We found a counter-example to p, meaning p is false
+      -- So p → False is true (vacuously true)
+      -- But we can't prove it without knowing p is false, so we give up
+      return .gaveUp 1
+    | .gaveUp n =>
+      -- We couldn't determine if p holds, so we give up
+      return .gaveUp n
+
+-- Instance to handle (NamedBinder var p) → False
+-- This handles the case where addDecorations wraps p in NamedBinder but not the → False
+instance (priority := 100) impFalseTestableNamed [PrintableProp p] [Testable p] :
+    Testable ((NamedBinder var p) → False) where
+  run := fun cfg min => do
+    -- Test by trying to find a case where p holds
+    let r ← runProp (NamedBinder var p) cfg min
+    match r with
+    | .success (PSum.inr hp) =>
+      -- We found a case where p holds with proof, so (NamedBinder var p) → False is false
+      return .failure (fun h => h hp) [] 0
+    | .success (PSum.inl _) =>
+      -- We found a case where p holds but without proof
+      return .gaveUp 1
+    | .failure _ _ _ =>
+      -- We found a counter-example to p
+      return .gaveUp 1
+    | .gaveUp n =>
+      return .gaveUp n
 
 -- TODO: only in mathlib: @[pp_with_univ]
 instance (priority := 100) forallTypesULiftTestable.{u}
@@ -445,6 +585,65 @@ instance varTestable [SampleableExt α] {β : α → Prop} [∀ x, Testable (β 
         pure ⟨x, r⟩
     return addVarInfo var finalX (· <| SampleableExt.interp finalX) finalR
 
+/-- Test an existential property by generating samples and trying to find one that satisfies the predicate.
+Unlike universal properties (which we try to disprove), existential properties require finding a witness.
+Each call to `run` tests ONE sample. The outer `runSuite` will call this multiple times. -/
+instance existsTestable [SampleableExt α] {β : α → Prop} [∀ x, Testable (β x)] :
+    Testable (∃ x : α, β x) where
+  run := fun cfg _min => do
+    -- 与 varTestable 一样：每次 run 只测试一个样本，避免嵌套时指数爆炸
+    let x ← Arbitrary.arbitrary
+    if cfg.traceSuccesses || cfg.traceDiscarded then
+      slimTrace s!"trying witness: {repr x}"
+    let r ← Testable.runPropE (β <| SampleableExt.interp x) cfg false
+    match r with
+    | TestResult.success _ =>
+      -- 找到一个满足条件的见证！
+      if cfg.traceSuccesses then
+        slimTrace s!"found witness: {repr x}"
+      return TestResult.success (PSum.inl ())
+    | TestResult.failure _ _ _ =>
+      -- 这个样本不满足条件，返回 gaveUp 让外层继续尝试其他样本
+      if cfg.traceDiscarded then
+        slimTrace s!"candidate {repr x} is not a witness"
+      return TestResult.gaveUp 1
+    | TestResult.gaveUp n =>
+      -- 这个样本无法测试
+      return TestResult.gaveUp n
+
+/-- Test a negated existential property ¬∃ x, β x by trying to find a counterexample.
+This is equivalent to testing ∀ x, ¬β x.
+If we find any x where β x holds, then ¬∃ x, β x is false. -/
+instance notExistsTestable [SampleableExt α] {β : α → Prop} [∀ x, Testable (β x)] :
+    Testable (¬∃ x : α, β x) where
+  run := fun cfg min => do
+    -- 生成一个样本并测试 β x 是否成立
+    let x ← Arbitrary.arbitrary
+    if cfg.traceSuccesses || cfg.traceDiscarded then
+      slimTrace s!"testing ¬∃: trying {repr x}"
+    let r ← Testable.runPropE (β <| SampleableExt.interp x) cfg false
+    match r with
+    | TestResult.success (PSum.inr hp) =>
+      -- 找到一个 x 使得 β x 成立！这就是 ¬∃ x, β x 的反例
+      if cfg.traceSuccesses then
+        slimTrace s!"found counterexample to ¬∃: {repr x} satisfies the predicate"
+      -- 构造 ¬(¬∃ x, β x) 的证明
+      have h : ¬(¬∃ x : α, β x) := fun hnex => hnex ⟨SampleableExt.interp x, hp⟩
+      return TestResult.failure h [s!"found witness: {repr x}"] 0
+    | TestResult.success (PSum.inl _) =>
+      -- β x 成立但没有证明，保守起见我们放弃
+      if cfg.traceDiscarded then
+        slimTrace s!"¬∃: {repr x} may satisfy predicate but no proof"
+      return TestResult.gaveUp 1
+    | TestResult.failure _ _ _ =>
+      -- 这个样本不满足 β x，这支持 ¬∃ x, β x
+      if cfg.traceSuccesses then
+        slimTrace s!"¬∃: {repr x} does not satisfy predicate (good)"
+      return TestResult.success (PSum.inl ())
+    | TestResult.gaveUp n =>
+      -- 无法测试这个样本
+      return TestResult.gaveUp n
+
 /-- Test a universal property about propositions -/
 instance propVarTestable {β : Prop → Prop} [∀ b : Bool, Testable (β b)] :
   Testable (NamedBinder var <| ∀ p : Prop, β p)
@@ -478,6 +677,59 @@ instance (priority := 2000) subtypeVarTestable {α : Type u} {p : α → Prop} {
       have := by simp [Subtype.forall, NamedBinder]
       return iff this r
 
+instance (priority := high+1) decidableImpTestable {p q : Prop}
+    [PrintableProp p] [PrintableProp q] [Decidable p] [Decidable q] :
+    Testable (p → q) where
+  run := fun _ _ =>
+    if hp : p then
+      if hq : q then
+        -- p true, q true, implication holds
+        have h : p → q := fun _ => hq
+        return success (PSum.inr h)
+      else
+        -- p true, q false, implication fails
+        have h : ¬(p → q) := fun h => hq (h hp)
+        let s := s!"{printProp p} → {printProp q}"
+        return failure h [s!"issue: {s} does not hold (premise is true but conclusion is false)"] 0
+    else
+      -- p false, implication holds vacuously
+      have h : p → q := fun hp' => absurd hp' hp
+      return success (PSum.inr h)
+
+instance (priority := high+1) decidableIffTestable {p q : Prop}
+    [PrintableProp p] [PrintableProp q] [Decidable p] [Decidable q] :
+    Testable (p ↔ q) where
+  run := fun _ _ =>
+    if hp : p then
+      if hq : q then
+        -- Both true, iff holds
+        have h : p ↔ q := ⟨fun _ => hq, fun _ => hp⟩
+        return success (PSum.inr h)
+      else
+        -- p true, q false, iff fails
+        have h : ¬(p ↔ q) := fun h => hq (h.mp hp)
+        let s := s!"{printProp p} ↔ {printProp q}"
+        return failure h [s!"issue: {s} does not hold (left is true, right is false)"] 0
+    else
+      if hq : q then
+        -- p false, q true, iff fails
+        have h : ¬(p ↔ q) := fun h => hp (h.mpr hq)
+        let s := s!"{printProp p} ↔ {printProp q}"
+        return failure h [s!"issue: {s} does not hold (left is false, right is true)"] 0
+      else
+        -- Both false, iff holds
+        have h : p ↔ q := ⟨fun hp' => absurd hp' hp, fun hq' => absurd hq' hq⟩
+        return success (PSum.inr h)
+
+instance notTestable [PrintableProp p] [Decidable p] : Testable (¬ p) where
+  run := fun _ _ =>
+    if h : p then
+      have nh : ¬¬p := fun hnp => hnp h
+      let s := s!"¬{printProp p}"
+      return failure nh [s!"issue: {s} does not hold ({printProp p} is true)"] 0
+    else
+      return success (PSum.inr h)
+
 instance (priority := low) decidableTestable {p : Prop} [PrintableProp p] [Decidable p] :
     Testable p where
   run := fun _ _ =>
@@ -486,6 +738,93 @@ instance (priority := low) decidableTestable {p : Prop} [PrintableProp p] [Decid
     else
       let s := printProp p
       return failure h [s!"issue: {s} does not hold"] 0
+
+/-- Instance for testing propositions that involve pattern matching on Option.
+This handles cases like: `match opt with | none => P | some x => Q x` -/
+instance (priority := 1000) optionMatchTestable {α : Type _} {opt : Option α}
+    {noneCase : Prop} {someCase : α → Prop}
+    [Testable noneCase] [∀ x, Testable (someCase x)] :
+    Testable (opt.casesOn noneCase someCase) where
+  run := fun cfg min =>
+    match opt with
+    | none => Testable.runProp noneCase cfg min
+    | some x => Testable.runProp (someCase x) cfg min
+
+/-- Instance for testing propositions with dependent Option match inside quantifiers.
+Handles: `∀ x, match f x with | none => P | some y => Q y` -/
+instance (priority := 900) dependentOptionTestable {α β : Type _}
+    [SampleableExt α] {f : α → Option β}
+    {noneCase : Prop} {someCase : β → Prop}
+    [Testable noneCase] [∀ y, Testable (someCase y)] :
+    Testable (NamedBinder var (∀ (x : α), (f x).casesOn noneCase someCase)) where
+  run := fun cfg min =>
+    haveI : ∀ x, Testable ((f x).casesOn noneCase someCase) := fun _ => optionMatchTestable
+    varTestable.run cfg min
+
+/-- Instance for testing propositions that involve pattern matching on List.
+This handles cases like: `match lst with | [] => P | x :: xs => Q x xs` -/
+instance listMatchTestable {α : Type _} {lst : List α}
+    {nilCase : Prop} {consCase : α → List α → Prop}
+    [Testable nilCase] [∀ x xs, Testable (consCase x xs)] :
+    Testable (lst.casesOn nilCase consCase) where
+  run := fun cfg min =>
+    match lst with
+    | [] => Testable.runProp nilCase cfg min
+    | x :: xs => Testable.runProp (consCase x xs) cfg min
+
+/-- Instance for testing propositions with dependent List match inside quantifiers.
+Handles: `∀ xs, match xs with | [] => P | y :: ys => Q y ys` -/
+instance (priority := 900) dependentListTestable {α : Type _}
+    [SampleableExt (List α)]
+    {nilCase : Prop} {consCase : α → List α → Prop}
+    [Testable nilCase] [∀ y ys, Testable (consCase y ys)] :
+    Testable (NamedBinder var (∀ (xs : List α), xs.casesOn nilCase consCase)) where
+  run := fun cfg min =>
+    haveI : ∀ (xs : List α), Testable ((xs : List α).casesOn nilCase consCase) := fun xs => @listMatchTestable α xs nilCase consCase _ _
+    varTestable.run cfg min
+
+/-- Instance for testing propositions that involve pattern matching on Nat.
+This handles cases like: `match n with | 0 => P | n+1 => Q n` -/
+instance natMatchTestable {n : Nat}
+    {zeroCase : Prop} {succCase : Nat → Prop}
+    [Testable zeroCase] [∀ m, Testable (succCase m)] :
+    Testable (Nat.casesOn n zeroCase succCase) where
+  run := fun cfg min =>
+    match n with
+    | 0 => Testable.runProp zeroCase cfg min
+    | m + 1 => Testable.runProp (succCase m) cfg min
+
+/-- Instance for testing propositions that involve pattern matching on Bool.
+This handles cases like: `match b with | true => P | false => Q` -/
+instance boolMatchTestable {b : Bool}
+    {trueCase falseCase : Prop}
+    [Testable trueCase] [Testable falseCase] :
+    Testable (Bool.casesOn b falseCase trueCase) where
+  run := fun cfg min =>
+    match b with
+    | true => Testable.runProp trueCase cfg min
+    | false => Testable.runProp falseCase cfg min
+
+/-- Instance for testing propositions that involve pattern matching on Sum.
+This handles cases like: `match s with | inl a => P a | inr b => Q b` -/
+instance sumMatchTestable {α β : Type _} {s : α ⊕ β}
+    {inlCase : α → Prop} {inrCase : β → Prop}
+    [∀ a, Testable (inlCase a)] [∀ b, Testable (inrCase b)] :
+    Testable (Sum.casesOn s inlCase inrCase) where
+  run := fun cfg min =>
+    match s with
+    | Sum.inl a => Testable.runProp (inlCase a) cfg min
+    | Sum.inr b => Testable.runProp (inrCase b) cfg min
+
+/-- Instance for testing propositions that involve pattern matching on Prod (pairs).
+This handles cases like: `match p with | (a, b) => Q a b` -/
+instance prodMatchTestable {α β : Type _} {p : α × β}
+    {pairCase : α → β → Prop}
+    [∀ a b, Testable (pairCase a b)] :
+    Testable (Prod.casesOn p pairCase) where
+  run := fun cfg min =>
+    let (a, b) := p
+    Testable.runProp (pairCase a b) cfg min
 
 
 end Testable

@@ -4,6 +4,8 @@ import Std.Data.HashMap
 open Std
 
 set_option maxHeartbeats 0
+set_option synthInstance.maxSize 512
+set_option linter.unusedVariables false
 
 def listToNat : List Nat → Nat
 | []       => 0
@@ -46,4 +48,8 @@ def addTwoNumbers_postcond (l1 : List Nat) (l2 : List Nat) (result: List Nat) (h
 -- Test with SafeGuard disabled
 theorem addTwoNumbers_spec_satisfied (l1: List Nat) (l2: List Nat) (h_precond : addTwoNumbers_precond (l1) (l2)) :
     addTwoNumbers_postcond (l1) (l2) (addTwoNumbers (l1) (l2) h_precond) h_precond := by
-    plausible_all (config := {quiet := true, enableSafeGuard := false})
+    dsimp [addTwoNumbers_postcond, addTwoNumbers_precond]
+    dsimp [addTwoNumbers_postcond, addTwoNumbers_precond] at h_precond
+    -- any_goals (apply And.intro)
+    -- any_goals (apply And.intro)
+    all_goals (plausible (config := {quiet := true, enableSafeGuard := false}))

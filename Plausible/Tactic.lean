@@ -6,6 +6,9 @@ Authors: Simon Hudon, Kim Morrison
 
 import Plausible.Testable
 import Plausible.Attr
+import Lean.Meta.Tactic.Split
+import Plausible.SplitTacs.SplitIte
+import Plausible.SplitTacs.SplitMatch
 
 
 /-!
@@ -153,9 +156,12 @@ Options:
 * `set_option trace.plausible.instance true`: print the instances of `testable` being used to test
   the proposition
 * `set_option trace.plausible.success true`: print the tested samples that satisfy a property
+* `set_option trace.plausible.constructor true`: print the number of times `constructor` is used
+  in `plausible_all` (only applies to `plausible_all`)
+* `set_option trace.plausible.split true`: print the number of times `split` is used
+  in `plausible_all` (only applies to `plausible_all`)
 -/
 syntax (name := plausibleSyntax) "plausible" (config)? : tactic
-syntax (name := plausibleAllGoals) "plausible_all" (config)? : tactic
 
 elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
   let cfg ← elabConfig (mkOptionalNode cfg)
@@ -219,47 +225,149 @@ elab_rules : tactic | `(tactic| plausible $[$cfg]?) => withMainContext do
   _ ← code
   admitGoal g
 
-/-- Variant of `plausible` that automatically breaks down conjunctions and applies `plausible` to all subgoals.
+/-- `split_match` tactic: splits match expressions in the goal by introducing the match value and using cases -/
+syntax (name := splitMatchSyntax) "split_match" : tactic
 
-Usage: `plausible_all`
+elab_rules : tactic | `(tactic| split_match) => withMainContext do
+  -- Only split if the goal itself is a match expression
+  -- Do nothing otherwise to avoid creating duplicate goals
+  liftMetaTactic fun mvarId => do
+    -- Check if the target itself is a match expression that can be split
+    if let some mvarIds ← splitTarget? mvarId then
+      -- Only return if we actually split into multiple goals
+      -- If splitTarget? returns a single goal, it didn't really split anything
+      if mvarIds.length > 1 then
+        return mvarIds
+    -- If the goal is not a match expression, return it unchanged
+    return [mvarId]
 
-This tactic will:
-1. Execute `repeat (any_goals constructor)` to break down conjunctions
-2. Execute `plausible` on each subgoal sequentially, stopping immediately if any goal fails
+/-- `by_contra_exists` tactic: applies byContradiction only if the goal is an existential proposition (∃ x, P x) -/
+theorem byContradictionExists {α : Type} {P : α → Prop} (h : (∀ x, ¬P x) → False) : ∃ x, P x :=
+  Classical.byContradiction fun h_not => h (fun x h_px => h_not ⟨x, h_px⟩)
 
-This is useful when dealing with complex propositions that are conjunctions of multiple properties.
-Note: Unlike `all_goals plausible`, this stops as soon as one goal finds a counter-example. -/
-elab_rules : tactic | `(tactic| plausible_all $[$cfg]?) => withMainContext do
-  -- Step 1: Repeat constructor to break down conjunctions (with limit to avoid infinite loops)
-  -- We limit to at most 50 iterations to prevent performance issues
+/-- `preprocess` tactic: applies a set of preprocessing tactics to simplify goals -/
+syntax (name := preprocessSyntax) "preprocess" : tactic
+
+elab_rules : tactic | `(tactic| preprocess) => withMainContext do
+  -- We process goals one by one to avoid explosion
+  -- split_match will only succeed if there's actually a match expression to split
+  let goalsAfterAnd ← getGoals
+  if goalsAfterAnd.length > 0 then
+    -- Only try split_match on the first goal to avoid processing all goals at once
+    -- This prevents explosion when there are many goals with match expressions
+    Lean.Elab.Tactic.evalTactic (← `(tactic| try (any_goals _split_match)))
+
+  -- Step 2: Try to apply by_contra_exists to the goal
+  if goalsAfterAnd.length > 0 then
+    Lean.Elab.Tactic.evalTactic (← `(tactic| try (any_goals _split_ifs)))
+
+
+/-- Helper function for plausible_all that handles the core logic -/
+def plausibleAllCore (defs : Option (Array Ident)) (cfg : Option Lean.Syntax) : Lean.Elab.Tactic.TacticM Unit := do
+  -- Step 0: If definitions are provided, simplify using dsimp in hypotheses and goal
+  let goalsBeforeDsimp ← getGoals
+  if goalsBeforeDsimp.length > 0 then
+    let goalTypeBefore ← goalsBeforeDsimp[0]!.getType
+    let goalTypeBeforeFmt ← Meta.ppExpr goalTypeBefore
+    trace[plausible.plausible_all] s!"Before dsimp, initial goal: {goalTypeBeforeFmt}"
+  match defs with
+  | some defList =>
+    -- Apply dsimp for each definition in each hypothesis and goal
+    for defId in defList do
+      -- Apply to all goals and hypotheses
+      Lean.Elab.Tactic.evalTactic (← `(tactic| try (all_goals (dsimp [$defId:ident] at *))))
+  | none => pure ()
+  let goalsAfterDsimp ← getGoals
+  if goalsAfterDsimp.length > 0 then
+    let goalTypeAfter ← goalsAfterDsimp[0]!.getType
+    let goalTypeAfterFmt ← Meta.ppExpr goalTypeAfter
+    trace[plausible.plausible_all] s!"After dsimp, goal: {goalTypeAfterFmt}"
+
+  -- Step 1: Iteratively apply preprocessing tactics until no progress is made
+  -- This includes splitting And conjunctions and match expressions
+  let goalsBeforePreprocess ← getGoals
+  let initialGoalCountPreprocess := goalsBeforePreprocess.length
+  if initialGoalCountPreprocess > 0 then
+    let initialGoalType ← goalsBeforePreprocess[0]!.getType
+    let initialGoalTypeFmt ← Meta.ppExpr initialGoalType
+    trace[plausible.plausible_all] s!"Before preprocess, initial goal: {initialGoalTypeFmt}"
   let maxIterations := 50
+  let maxGoalCount := 200  -- Limit total goal count to avoid explosion
   let mut iterations := 0
-  let mut prevGoalCount := 0
+  let mut prevGoalCount := initialGoalCountPreprocess
   let mut shouldContinue := true
+  let mut totalProgress := 0
   while shouldContinue do
-    let goals ← getGoals
-    let currentGoalCount := goals.length
-    -- Stop if we've reached max iterations or if no progress is being made
-    if iterations >= maxIterations || (iterations > 0 && currentGoalCount == prevGoalCount) then
+    let goalsBeforeIteration ← getGoals
+    let goalCountBeforeIteration := goalsBeforeIteration.length
+    -- Stop if we've reached max iterations, max goal count, or no progress is being made
+    if iterations >= maxIterations || goalCountBeforeIteration >= maxGoalCount || (iterations > 0 && goalCountBeforeIteration == prevGoalCount) then
       shouldContinue := false
     else
-      prevGoalCount := currentGoalCount
+      prevGoalCount := goalCountBeforeIteration
       iterations := iterations + 1
-      Lean.Elab.Tactic.evalTactic (← `(tactic| try (any_goals constructor)))
+      -- Apply the preprocess tactic set
+      Lean.Elab.Tactic.evalTactic (← `(tactic| try preprocess))
+      let goalsAfterIteration ← getGoals
+      let goalCountAfterIteration := goalsAfterIteration.length
+      -- Check if we made progress
+      let goalsAdded := goalCountAfterIteration - goalCountBeforeIteration
+      totalProgress := totalProgress + goalsAdded
+      -- If no goals were added, stop immediately to avoid infinite loops
+      if goalsAdded == 0 then
+        shouldContinue := false
+      -- If we've added too many goals in one iteration, stop to avoid explosion
+      if goalsAdded > 50 then
+        trace[plausible.plausible_all] s!"Preprocess: stopping due to large goal increase ({goalsAdded} goals added in one iteration)"
+        shouldContinue := false
+  let goalsAfterPreprocess ← getGoals
+  let finalGoalCountAfterPreprocess := goalsAfterPreprocess.length
+  trace[plausible.plausible_all] s!"Preprocess: used {iterations} iterations, goals: {initialGoalCountPreprocess} → {finalGoalCountAfterPreprocess} (total progress: {totalProgress})"
 
   -- Step 2: Apply plausible to each subgoal sequentially, stopping on first failure
   -- We process goals one by one, and if plausible finds a counter-example, it will throw an error
   -- which will stop the entire tactic execution immediately
   let goals ← getGoals
+  trace[plausible.plausible_all] s!"After constructor/split, we have {goals.length} subgoals"
+  let mut idx := 0
+  for goal in goals do
+    let goalType ← goal.getType
+    let goalTypeFmt ← Meta.ppExpr goalType
+    trace[plausible.plausible_all] s!"Subgoal {idx + 1}: {goalTypeFmt}"
+    idx := idx + 1
   for _ in goals do
     -- Process only the first goal (if there are multiple, we'll handle them one by one)
     -- If plausible succeeds (no counter-example), it will admit the goal and we continue
     -- If plausible fails (finds counter-example), it will throw an error and stop execution
     match cfg with
-    | some cfgNode =>
+    | some cfgStx =>
+      let cfgNode : Lean.TSyntax `Lean.Parser.Tactic.config := ⟨cfgStx⟩
       Lean.Elab.Tactic.evalTactic (← `(tactic| focus (plausible $cfgNode)))
     | none =>
       Lean.Elab.Tactic.evalTactic (← `(tactic| focus plausible))
+
+/-- Variant of `plausible` that automatically breaks down conjunctions and applies `plausible` to all subgoals.
+
+Usage:
+- `plausible_all`
+- `plausible_all (config := { ... })`
+- `plausible_all [def1, def2, def3]`
+- `plausible_all [def1, def2, def3] (config := { ... })`
+
+This tactic will:
+0. If a list of definitions is provided, execute `dsimp [defs]` on both hypotheses and goal
+1. Execute `repeat (any_goals constructor)` to break down conjunctions
+2. Execute `repeat (any_goals split)` to break down match expressions
+3. Execute `plausible` on each subgoal sequentially, stopping immediately if any goal fails
+
+This is useful when dealing with complex propositions that are conjunctions of multiple properties.
+Note: Unlike `all_goals plausible`, this stops as soon as one goal finds a counter-example. -/
+elab "plausible_all" "[" defs:ident,* "]" cfg?:(config)? : tactic => withMainContext do
+  let identList := defs.getElems.map fun s => s
+  plausibleAllCore (some identList) cfg?
+
+elab "plausible_all" cfg?:(config)? : tactic => withMainContext do
+  plausibleAllCore none cfg?
 
 -- Porting note: below is the remaining code from mathlib3 which supports the
 -- `trace.plausible.instance` trace option, and which has not been ported.

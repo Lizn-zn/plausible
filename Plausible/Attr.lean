@@ -15,3 +15,6 @@ initialize registerTraceClass `plausible.success
 initialize registerTraceClass `plausible.shrink.steps
 initialize registerTraceClass `plausible.shrink.candidates
 initialize registerTraceClass `plausible.deriving.arbitrary
+initialize registerTraceClass `plausible.constructor
+initialize registerTraceClass `plausible.split
+initialize registerTraceClass `plausible.plausible_all
